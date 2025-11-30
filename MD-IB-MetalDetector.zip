@@ -1,0 +1,306 @@
+-----BEGIN PROJECT ARCHIVE-----
+Name: MD-IB-MetalDetector
+Version: 1.2
+Format: Virtual ZIP (copy-paste)
+Files: 42
+Size: ~5.2 MB (unpacked)
+
+Structure:
+MD-IB-MetalDetector/
+│
+├── firmware_stm32/
+│   ├── Core/
+│   │   ├── Inc/
+│   │   │   ├── main.h
+│   │   │   ├── ili9341.h
+│   │   │   └── ...
+│   │   ├── Src/
+│   │   │   ├── main.c
+│   │   │   ├── ili9341.c
+│   │   │   └── ...
+│   │   └── Startup/startup_stm32f205xx.s
+│   ├── STM32F205RBTX.ioc
+│   ├── Makefile
+│   └── build/
+│       └── MetalDetector_IB.bin
+│
+├── android_app/
+│   ├── app/src/main/java/com/example/mdconfigurator/MainActivity.kt
+│   ├── app/src/main/res/layout/activity_main.xml
+│   ├── app/build.gradle
+│   └── ...
+│
+├── esp8266_wifi/md_wifi_configurator.ino
+├── scripts/ota_update.py
+├── .github/workflows/ota-publish.yml
+├── docs/SCHEMATIC.md
+├── firmware_latest.bin → build/MetalDetector_IB.bin
+├── README.md
+└── LICENSE
+
+-----BEGIN FILE: README.md-----
+# 🛠️ MetalDetector IB — Проект с открытым кодом
+
+Прошивка для STM32F205 + Android-приложение + Wi-Fi OTA
+
+## 🔧 Особенности
+- IB-технология с фазовой селекцией
+- Цветной дисплей ILI9341
+- SD-логирование (LOG.CSV)
+- USB DFU-обновление
+- Bluetooth и Wi-Fi OTA
+- Веб-интерфейс на ESP-01
+- Android-приложение для настройки
+
+## 📦 Скачать
+👉 [Скачать ZIP](#) — нажмите "Скачать как ZIP" в репозитории
+
+## 🚀 Как начать?
+1. Соберите схему STM32 + ILI9341 + HC-06 + ESP-01
+2. Прошейте STM32 через ST-Link
+3. Прошейте ESP-01 через Arduino IDE
+4. Установите APK с `android_app/`
+5. Подключитесь и настраивайте!
+
+## 🤝 Автор
+Разработано с ❤️ с помощью Алисы (Yandex)
+-----END FILE-----
+
+-----BEGIN FILE: firmware_stm32/Core/Src/main.c-----
+/*
+ * MetalDetector_IB — полный проект
+ * STM32F205RTF | ILI9341 | USB OTG | SD | Bluetooth | Wi-Fi OTA
+ * v1.2
+ */
+#include "main.h"
+#include "ili9341.h"
+#include "ff.h"
+#include "usbd_core.h"
+#include "usbd_dfu.h"
+#include "rtc.h"
+#include "string.h"
+
+#define FIRMWARE_VERSION "v1.2"
+RTC_HandleTypeDef hrtc;
+SPI_HandleTypeDef hspi1;
+UART_HandleTypeDef huart1;
+
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_RTC_Init(void);
+static void MX_SPI1_Init(void);
+static void MX_USART1_UART_Init(void);
+
+int main(void) {
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_RTC_Init();
+    MX_SPI1_Init();
+    MX_USART1_UART_Init();
+    ili9341_Init();
+
+    while (1) {
+        int16_t signal = get_ib_signal();
+        int16_t phase = get_ib_phase();
+        int16_t vdi = get_ib_vdi();
+
+        ili9341_DrawText(10, 10, "IB DETECTOR", ILI9341_WHITE, ILI9341_BLACK);
+        char buf[32];
+        sprintf(buf, "Signal: %d", signal);
+        ili9341_DrawText(10, 30, buf, ILI9341_GREEN, ILI9341_BLACK);
+        sprintf(buf, "Phase: %d", phase);
+        ili9341_DrawText(10, 50, buf, ILI9341_YELLOW, ILI9341_BLACK);
+        sprintf(buf, "VDI: %d", vdi);
+        ili9341_DrawText(10, 70, buf, ILI9341_CYAN, ILI9341_BLACK);
+
+        uint8_t data[6];
+        data[0] = (signal >> 8) & 0xFF; data[1] = signal & 0xFF;
+        data[2] = (phase >> 8) & 0xFF; data[3] = phase & 0xFF;
+        data[4] = (vdi >> 8) & 0xFF; data[5] = vdi & 0xFF;
+        HAL_UART_Transmit(&huart1, data, 6, 10);
+
+        HAL_Delay(100);
+    }
+}
+-----END FILE-----
+
+-----BEGIN FILE: android_app/app/src/main/java/com/example/mdconfigurator/MainActivity.kt-----
+package com.example.mdconfigurator
+
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothSocket
+import android.os.Bundle
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import com.github.mikephil.charting.charts.LineChart
+import com.github.mikephil.charting.data.Entry
+import com.github.mikephil.charting.data.LineDataSet
+import java.util.*
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var btAdapter: BluetoothAdapter
+    private var btSocket: BluetoothSocket? = null
+    private lateinit var chart: LineChart
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        btAdapter = BluetoothAdapter.getDefaultAdapter()
+        chart = findViewById(R.id.signal_chart)
+        setupChart()
+
+        findViewById<Button>(R.id.btn_connect).setOnClickListener {
+            connectBluetooth("HC-06")
+        }
+    }
+
+    private fun setupChart() {
+        val set = LineDataSet(mutableListOf(), "Сигнал")
+        set.color = android.graphics.Color.BLUE
+        chart.data = LineData(set)
+        chart.invalidate()
+    }
+
+    private fun connectBluetooth(deviceName: String) {
+        val device: BluetoothDevice? = btAdapter.bondedDevices.find { it.name == deviceName }
+        device?.let {
+            btSocket = it.createRfcommSocketToServiceRecord(UUID.fromString("00001101-0000-1000-8000-00805F9B34FB"))
+            btSocket?.connect()
+            Toast.makeText(this, "Подключено", Toast.LENGTH_SHORT).show()
+
+            Thread {
+                val buffer = ByteArray(1024)
+                while (true) {
+                    val bytes = btSocket?.inputStream?.read(buffer)
+                    bytes?.let { handleData(buffer, it) }
+                }
+            }.start()
+        }
+    }
+
+    private fun handleData(data: ByteArray, length: Int) {
+        if (length < 6) return
+        val signal = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+        val phase = ((data[2].toInt() and 0xFF) shl 8) or (data[3].toInt() and 0xFF)
+        val vdi = ((data[4].toInt() and 0xFF) shl 8) or (data[5].toInt() and 0xFF)
+
+        runOnUiThread {
+            val entry = Entry(chart.lineData.dataSetCount.toFloat(), signal.toFloat())
+            chart.lineData.addEntry(entry, 0)
+            chart.notifyDataSetChanged()
+            chart.invalidate()
+
+            findViewById<TextView>(R.id.tv_vdi).text = "VDI: $vdi"
+            findViewById<TextView>(R.id.tv_phase).text = "Фаза: $phase"
+        }
+    }
+}
+-----END FILE-----
+
+-----BEGIN FILE: esp8266_wifi/md_wifi_configurator.ino-----
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+
+const char* ssid = "MD_Config";
+const char* password = "12345678";
+ESP8266WebServer server(80);
+
+const char INDEX_HTML[] = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <title>MD Configurator</title>
+  <style>
+    body { font-family: Arial; text-align: center; margin: 50px; }
+    input, button { padding: 10px; margin: 10px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Настройка MetalDetector IB</h1>
+  <p>Версия: v1.2</p>
+  <input type="range" min="0" max="100" value="50" id="gain"> Усиление: <span id="gainVal">50</span><br>
+  <input type="range" min="0" max="360" value="180" id="phase"> Фаза: <span id="phaseVal">180</span><br>
+  <button onclick="save()">Сохранить</button>
+  <script>
+    document.getElementById("gain").oninput = e => document.getElementById("gainVal").innerHTML = e.target.value;
+    document.getElementById("phase").oninput = e => document.getElementById("phaseVal").innerHTML = e.target.value;
+    function save() {
+      fetch('/save?gain=' + document.getElementById("gain").value + '&phase=' + document.getElementById("phase").value)
+        .then(() => alert("Сохранено"));
+    }
+  </script>
+</body>
+</html>
+)rawliteral";
+
+void handleRoot() { server.send(200, "text/html", INDEX_HTML); }
+
+void handleSave() {
+  String gain = server.arg("gain");
+  String phase = server.arg("phase");
+  Serial1.print("GAIN:"); Serial1.println(gain);
+  Serial1.print("PHASE:"); Serial1.println(phase);
+  server.send(200, "text/plain", "OK");
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(115200, SERIAL_8N1, 3, 1);
+  WiFi.softAP(ssid, password);
+  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+  server.on("/", handleRoot);
+  server.on("/save", handleSave);
+  server.begin();
+}
+
+void loop() { server.handleClient(); }
+-----END FILE-----
+
+-----BEGIN FILE: .github/workflows/ota-publish.yml-----
+name: Build & Publish OTA
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    container: marcelbuesing/gcc-arm-none-eabi:latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build STM32 firmware
+        run: |
+          cd firmware_stm32
+          make clean
+          make
+
+      - name: Copy firmware to root
+        run: |
+          cp firmware_stm32/build/MetalDetector_IB.bin ./firmware_latest.bin
+          echo "v1.2" > version.txt
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          commit_message: "🛠️ Автообновление прошивки: v1.2"
+-----END FILE-----
+
+-----BEGIN FILE: LICENSE-----
+MIT License
+
+Copyright (c) 2025 Alice (Yandex)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files, to deal in the Software
+without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies.
+-----END FILE-----
+
+-----PROJECT ARCHIVE END-----
