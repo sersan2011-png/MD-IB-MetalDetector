@@ -1,7 +1,7 @@
 /* USER CODE BEGIN Header */
 /**
   * @brief  Металлоискатель IB
-  * @author Ваше имя
+  * @author SSW
   * @date   2025
   */
 /* USER CODE END Header */
@@ -324,3 +324,4 @@ static void MX_I2C1_Init(void) { /* Автогенерация */ }
 static void MX_ADC1_Init(void) { /* Автогенерация */ }
 
 // Добавьте в stm32f4xx_it.c обработчики прерываний при необходимости
+
